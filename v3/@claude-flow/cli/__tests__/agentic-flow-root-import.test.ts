@@ -61,6 +61,8 @@ describe('agentic-flow root entry is never imported', () => {
   it('no v3 source file imports the root entry', () => {
     const v3 = resolve(CLI, '../..');
     const rootImport = /(?:import\s*\(|require\s*\(|from\s+|safeImport<[^>]*>\s*\()\s*['"`]agentic-flow['"`]/;
+    // A specifier held in a variable (`const p = 'agentic-flow'; import(p)`) evades the pattern above.
+    const rootSpecifierVar = /(?:const|let|var)\s+\w+\s*=\s*['"`]agentic-flow['"`]/;
     const offenders: string[] = [];
     const walk = (dir: string): void => {
       for (const name of readdirSync(dir)) {
@@ -69,7 +71,8 @@ describe('agentic-flow root entry is never imported', () => {
         if (statSync(path).isDirectory()) { walk(path); continue; }
         if (!/\.(ts|mts|cts|js|mjs|cjs)$/.test(name) || /\.test\.|\.spec\./.test(name)) continue;
         readFileSync(path, 'utf8').split('\n').forEach((line, i) => {
-          if (rootImport.test(line.replace(/\/\/.*$/, ''))) offenders.push(`${relative(v3, path)}:${i + 1}`);
+          const code = line.replace(/\/\/.*$/, '');
+          if (rootImport.test(code) || rootSpecifierVar.test(code)) offenders.push(`${relative(v3, path)}:${i + 1}`);
         });
       }
     };
