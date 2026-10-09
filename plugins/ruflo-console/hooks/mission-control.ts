@@ -357,7 +357,7 @@ export function missionActions(state: State, host: Host, runner: Runner): Missio
       runner.ask(dispatchSpec(state, host, mission, task, text => host.submitPrompt(text)), 'nothing to hand out')
     },
     pause: () => setPaused(state, host, true),
-    resume: () => setPaused(state, host, false),
+    resume: by => setPaused(state, host, false, by),
     cancel: () => {
       const mission = activeMission(state)
 
