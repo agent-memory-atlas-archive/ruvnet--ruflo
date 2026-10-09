@@ -15,7 +15,14 @@
  * handle through it keeps the source-built 11.x addon out of the process.
  * `overrides` cannot do this: npm ignores them in a dependency's package.json,
  * which is where ours sit for anyone installing ruflo.
+ *
+ * getHostSqliteDriver() is the single source of the constructor: the CLI's
+ * shared-sqlite loader (#3693/#3883) resolves better-sqlite3 from this file's
+ * location too, so every handle on memory.db shares one native copy.
  */
+import { createRequire } from 'node:module';
+
+type DbCtor = new (path: string, opts?: Record<string, unknown>) => { pragma(sql: string): unknown };
 
 type AgentDBLike = {
   config?: { forceWasm?: boolean };
@@ -23,21 +30,36 @@ type AgentDBLike = {
   initializeDatabase?: (dbPath: string) => Promise<unknown>;
 };
 
+let hostDriver: DbCtor | null | undefined;
+
+/** The better-sqlite3 constructor this package resolves, or null when it is not installed. */
+export function getHostSqliteDriver(): DbCtor | null {
+  if (hostDriver !== undefined) return hostDriver;
+  try {
+    const mod = createRequire(import.meta.url)('better-sqlite3');
+    hostDriver = (mod?.default ?? mod) as DbCtor;
+  } catch {
+    hostDriver = null;
+  }
+  return hostDriver;
+}
+
 /**
  * Replace `agentdb.initializeDatabase` so `initialize()` opens the database
- * with our better-sqlite3. Must be called before `agentdb.initialize()`.
+ * with getHostSqliteDriver(). Must be called before `agentdb.initialize()`.
  * Falls back to AgentDB's own loader when ours cannot open the file, and
- * leaves `forceWasm` instances alone.
+ * leaves `forceWasm` instances alone. Returns whether the loader was replaced.
  */
-export function useHostSqliteDriver(agentdb: AgentDBLike | null | undefined): void {
-  if (!agentdb || typeof agentdb.initializeDatabase !== 'function') return;
-  if (agentdb.config?.forceWasm) return;
+export function useHostSqliteDriver(agentdb: AgentDBLike | null | undefined): boolean {
+  if (!agentdb || typeof agentdb.initializeDatabase !== 'function') return false;
+  if (agentdb.config?.forceWasm) return false;
 
   const agentdbLoader = agentdb.initializeDatabase.bind(agentdb);
   agentdb.initializeDatabase = async (dbPath: string) => {
-    let db: { pragma(sql: string): unknown };
+    const Database = getHostSqliteDriver();
+    if (!Database) return agentdbLoader(dbPath);
+    let db: InstanceType<DbCtor>;
     try {
-      const Database = (await import('better-sqlite3')).default;
       db = new Database(dbPath);
     } catch {
       return agentdbLoader(dbPath);
@@ -47,4 +69,5 @@ export function useHostSqliteDriver(agentdb: AgentDBLike | null | undefined): vo
     agentdb.usingWasm = false;
     return db;
   };
+  return true;
 }

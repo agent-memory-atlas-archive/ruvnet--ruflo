@@ -6,12 +6,13 @@
  * package's better-sqlite3, so the source-built 11.x addon is never loaded.
  */
 
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { afterAll, afterEach, describe, it, expect, vi } from 'vitest';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { useHostSqliteDriver } from './agentdb-native-driver.js';
+import { getHostSqliteDriver, useHostSqliteDriver } from './agentdb-native-driver.js';
 
 function fakeAgentDB(config: { forceWasm?: boolean } = {}) {
   const calls: string[] = [];
@@ -66,9 +67,14 @@ describe('useHostSqliteDriver', () => {
     expect(calls).toEqual([':memory:']);
   });
 
-  it('ignores objects without initializeDatabase', () => {
-    expect(() => useHostSqliteDriver(null)).not.toThrow();
-    expect(() => useHostSqliteDriver({})).not.toThrow();
+  it('reports objects without initializeDatabase instead of throwing', () => {
+    expect(useHostSqliteDriver(null)).toBe(false);
+    expect(useHostSqliteDriver({})).toBe(false);
+    expect(useHostSqliteDriver(fakeAgentDB().agentdb)).toBe(true);
+  });
+
+  it('getHostSqliteDriver is the better-sqlite3 this package resolves', () => {
+    expect(getHostSqliteDriver()).toBe(Database);
   });
 
   it('hands the real AgentDB.initialize() a working handle', async () => {
@@ -87,4 +93,134 @@ describe('useHostSqliteDriver', () => {
     expect(opened).toBeInstanceOf(Database);
     (opened as Database.Database | undefined)?.close();
   }, 60_000);
+});
+
+/**
+ * A nested agentdb copy of better-sqlite3 — the installed layout that aborts on
+ * Node 24. pnpm dedupes the workspace onto one copy, so build a second native
+ * copy under a temp `node_modules/agentdb`, like graph-writer-shared-sqlite-3693.
+ */
+describe('useHostSqliteDriver with a nested agentdb copy', () => {
+  const req = createRequire(import.meta.url);
+  const root = mkdtempSync(join(tmpdir(), 'cf-agentdb-nested-'));
+  const agentdbDir = join(root, 'node_modules', 'agentdb');
+  let NestedCtor: any;
+  let FakeAgentDB: any;
+  try {
+    const nm = join(agentdbDir, 'node_modules');
+    mkdirSync(nm, { recursive: true });
+    cpSync(dirname(req.resolve('better-sqlite3/package.json')), join(nm, 'better-sqlite3'), { recursive: true });
+    for (const dep of ['bindings', 'file-uri-to-path']) {
+      try { symlinkSync(dirname(req.resolve(`${dep}/package.json`)), join(nm, dep)); } catch { /* optional */ }
+    }
+    // Same shape as AgentDB.initializeDatabase(): load better-sqlite3 from agentdb's own location.
+    writeFileSync(join(agentdbDir, 'index.cjs'), `
+      class AgentDB {
+        constructor(config = {}) { this.config = config; this.usingWasm = true; }
+        async initializeDatabase(dbPath) {
+          const Database = require('better-sqlite3');
+          const db = new Database(dbPath);
+          db.pragma('journal_mode = WAL');
+          this.usingWasm = false;
+          return db;
+        }
+        async initialize() { this.db = await this.initializeDatabase(this.config.dbPath || ':memory:'); }
+        get database() { return this.db; }
+      }
+      module.exports = { AgentDB, NestedDatabase: require('better-sqlite3') };
+    `);
+    ({ AgentDB: FakeAgentDB, NestedDatabase: NestedCtor } = createRequire(join(agentdbDir, 'index.cjs'))('./index.cjs'));
+  } catch { NestedCtor = null; }
+
+  afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+
+  it.skipIf(!NestedCtor)('control: without the helper AgentDB opens its handle with the nested copy', async () => {
+    expect(NestedCtor).not.toBe(Database);
+    const agentdb = new FakeAgentDB({ dbPath: ':memory:' });
+    await agentdb.initialize();
+
+    expect(agentdb.database).toBeInstanceOf(NestedCtor);
+    agentdb.database.close();
+  });
+
+  it.skipIf(!NestedCtor)('with the helper the handle comes from getHostSqliteDriver(), not the nested copy', async () => {
+    const agentdb = new FakeAgentDB({ dbPath: ':memory:' });
+    useHostSqliteDriver(agentdb);
+    await agentdb.initialize();
+
+    expect(agentdb.database).toBeInstanceOf(getHostSqliteDriver());
+    expect(agentdb.database).not.toBeInstanceOf(NestedCtor);
+    agentdb.database.close();
+  });
+});
+
+/** Fake agentdb module whose AgentDB records the handle its initialize() opened. */
+function agentdbModuleRecordingHandle() {
+  const opened: unknown[] = [];
+  class AgentDB {
+    config: Record<string, unknown>;
+    usingWasm = true;
+    database: unknown = null;
+    constructor(config: Record<string, unknown> = {}) { this.config = config; }
+    async initializeDatabase(_dbPath: string): Promise<unknown> { return { agentdbOwnLoader: true }; }
+    async initialize() {
+      this.database = await this.initializeDatabase((this.config.dbPath as string) || ':memory:');
+      opened.push(this.database);
+    }
+  }
+  return { opened, module: { AgentDB, default: AgentDB } };
+}
+
+describe('AgentDB construction sites apply useHostSqliteDriver', () => {
+  afterEach(() => {
+    vi.doUnmock('agentdb');
+    vi.resetModules();
+  });
+
+  it('ControllerRegistry.initAgentDB', async () => {
+    const fake = agentdbModuleRecordingHandle();
+    vi.resetModules();
+    vi.doMock('agentdb', () => fake.module);
+    const { ControllerRegistry } = await import('./controller-registry.js');
+
+    await (new ControllerRegistry() as any).initAgentDB({ dbPath: ':memory:' });
+
+    expect(fake.opened).toHaveLength(1);
+    expect(fake.opened[0]).toBeInstanceOf(Database);
+    (fake.opened[0] as Database.Database).close();
+  });
+
+  it('AgentDBBackend.initialize', async () => {
+    const fake = agentdbModuleRecordingHandle();
+    vi.resetModules();
+    vi.doMock('agentdb', () => fake.module);
+    const { AgentDBBackend } = await import('./agentdb-backend.js');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Schema setup after initialize() may fail against the fake; the handle is what matters.
+    await new AgentDBBackend({ dbPath: ':memory:' } as any).initialize();
+    errors.mockRestore();
+
+    expect(fake.opened).toHaveLength(1);
+    expect(fake.opened[0]).toBeInstanceOf(Database);
+    (fake.opened[0] as Database.Database).close();
+  });
+});
+
+/**
+ * Drift guard: useHostSqliteDriver replaces AgentDB.initializeDatabase(). If
+ * agentdb renames it or stops routing initialize() through it, the helper would
+ * silently do nothing — fail here instead.
+ */
+describe('agentdb AgentDB contract the helper depends on', () => {
+  it('initialize() opens its handle through initializeDatabase(dbPath) with native better-sqlite3', async () => {
+    const { AgentDB } = (await import('agentdb')) as any;
+    const source = readFileSync(createRequire(import.meta.url).resolve('agentdb').replace(/index\.js$/, 'core/AgentDB.js'), 'utf8');
+
+    expect(typeof AgentDB.prototype.initializeDatabase).toBe('function');
+    expect(useHostSqliteDriver(new AgentDB({ dbPath: ':memory:' }))).toBe(true);
+    expect(source).toMatch(/this\.db\s*=\s*await\s+this\.initializeDatabase\(dbPath\)/);
+    expect(source).toMatch(/import\('better-sqlite3'\)/);
+    expect(source).toMatch(/pragma\('journal_mode = WAL'\)/);
+  });
 });
