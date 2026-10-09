@@ -10,9 +10,9 @@
  *  - verify reports `unknown-signer` when the key isn't in trust anchors
  *  - verify reports `pass` on a valid round-trip sign → verify
  *  - verify reports `signature-invalid` on a flipped signature byte
- *  - the shipped placeholder (all-zero) anchor never vouches, and small-order
- *    keys are rejected even when anchored (a forged R=identity, S=0 signature
- *    verifies against them for every message under ZIP-215)
+ *  - a placeholder (all-zero) anchor, such as the one shipped in
+ *    trust-anchors.json, never vouches, and small-order keys are rejected even
+ *    when anchored (ZIP-215 verification would accept forged signatures)
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -207,9 +207,9 @@ describe('PluginIntegrityVerifier.verify', () => {
 
 describe('placeholder and small-order signing keys', () => {
   const ZERO_KEY = '0'.repeat(64);
-  // y = -1: the order-2 point (0, -1).
+  // A small-order point.
   const ORDER_TWO_KEY = 'ec' + 'ff'.repeat(30) + '7f';
-  // R = identity, S = 0.
+  // Known-bad signature fixture used against small-order keys.
   const FORGED_SIG = '01' + '0'.repeat(126);
 
   function forged(publicKey: string): SignedPluginManifest {
@@ -223,21 +223,26 @@ describe('placeholder and small-order signing keys', () => {
     expect(isPlaceholderKey(ORDER_TWO_KEY)).toBe(false);
   });
 
-  it('the shipped trust-anchors.json placeholder never vouches for a forged manifest', async () => {
+  it('a placeholder anchor never vouches for a forged manifest', async () => {
+    const r = await new PluginIntegrityVerifier({ trustAnchors: anchorsFor(ZERO_KEY) }).verify(forged(ZERO_KEY));
+    expect(r.status).toBe('unknown-signer');
+  });
+
+  it('no placeholder anchor shipped in trust-anchors.json vouches for anything', async () => {
+    // Holds whether or not maintainers have replaced the placeholder with a real key.
     const shipped = JSON.parse(
       readFileSync(new URL('../../cli/src/plugins/trust/trust-anchors.json', import.meta.url), 'utf-8'),
     ) as TrustAnchors;
-    expect(shipped.anchors.some((a) => a.publicKey === ZERO_KEY)).toBe(true);
-    expect(findAnchor(shipped.anchors, '@claude-flow/evil', ZERO_KEY, Date.now())).toBeNull();
-
-    const r = await new PluginIntegrityVerifier({ trustAnchors: shipped }).verify(forged(ZERO_KEY));
-    expect(r.status).not.toBe('pass');
-    expect(r.status).toBe('unknown-signer');
+    for (const a of shipped.anchors.filter((x) => isPlaceholderKey(x.publicKey))) {
+      expect(findAnchor(shipped.anchors, '@claude-flow/evil', a.publicKey, Date.now())).toBeNull();
+      const r = await new PluginIntegrityVerifier({ trustAnchors: shipped }).verify(forged(a.publicKey));
+      expect(r.status).not.toBe('pass');
+    }
   });
 
   it('rejects a forged signature even when a small-order key is anchored', async () => {
     if (!ed) { console.warn('@noble/ed25519 unavailable — skipping'); return; }
-    // Sanity: noble's default (ZIP-215) verify accepts the forgery against this key.
+    // Precondition: the default (lenient) verify mode accepts this fixture for this key.
     const m = forged(ORDER_TWO_KEY);
     expect(await ed.verifyAsync(hexBytes(FORGED_SIG), hexBytes(m.manifestHash), hexBytes(ORDER_TWO_KEY))).toBe(true);
 

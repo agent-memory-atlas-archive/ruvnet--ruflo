@@ -5,7 +5,10 @@
  * install run npm lifecycle scripts and skip the permission gate. So:
  *  - an unverified registry (unsigned, bad signature, placeholder pinned key, verification off)
  *    and the built-in fallback list carry no registry trust;
- *  - a placeholder (all-zero) pinned key is never used to verify — it accepts a forged signature;
+ *  - a placeholder pinned key (all-zero or any small-order point) is never used to verify, and the
+ *    Ed25519 verifier runs in RFC 8032 strict mode;
+ *  - an unverified registry claims no official plugins and no verified authors, and the MCP
+ *    transfer_plugin-* tools report the registry status;
  *  - CLAUDE_FLOW_STRICT_PLUGINS=true turns the fallback into an error and makes `plugins install`
  *    refuse without --allow-unverified;
  *  - `plugins install` never passes an unverified entry's trust, permissions or checksum on.
@@ -40,12 +43,21 @@ import { PluginDiscoveryService } from '../src/plugins/store/discovery.js';
 import { verifyEd25519Signature } from '../src/transfer/ipfs/client.js';
 import { isPlaceholderSigningKey, isStrictPluginMode } from '../src/plugins/trust-policy.js';
 import { pluginsCommand } from '../src/commands/plugins.js';
+import transferTools from '../src/mcp-tools/transfer-tools.js';
 import type { CommandContext } from '../src/types.js';
 import anchorsFile from '../src/plugins/trust/trust-anchors.json';
 
 const ZERO_KEY = '0'.repeat(64);
-// R = identity point, S = 0: verifies against any small-order key for every message (ZIP-215).
-const FORGED_SIG = '01' + '0'.repeat(126);
+// An ordinary Ed25519 public key (not small-order) with no known signer.
+const REAL_KEY = 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c';
+// Small-order points: identity, order 2, order 8.
+const SMALL_ORDER_KEYS = [
+  '01' + '0'.repeat(62),
+  'ec' + 'ff'.repeat(30) + '7f',
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+];
+// Known-bad signature fixture used against small-order keys.
+const BAD_SIG = '01' + '0'.repeat(126);
 
 function entry(name: string, trustLevel = 'official') {
   return {
@@ -110,25 +122,42 @@ afterEach(() => {
 });
 
 describe('placeholder signing keys', () => {
-  it('the shipped trust anchor is a placeholder', () => {
-    expect(anchorsFile.anchors.length).toBeGreaterThan(0);
-    for (const a of anchorsFile.anchors) expect(isPlaceholderSigningKey(a.publicKey)).toBe(true);
+  it('a shipped trust anchor that is a placeholder leaves a registry pinned to it unverified', async () => {
+    // Holds whether or not maintainers have replaced the placeholder with a real key.
+    for (const a of anchorsFile.anchors) {
+      if (!isPlaceholderSigningKey(a.publicKey)) continue;
+      ipfs.registry = registryWith([entry('@claude-flow/a')], { registrySignature: BAD_SIG });
+      const result = await serviceFor(`ed25519:${a.publicKey}`).discoverRegistry();
+      expect(result.verified).toBe(false);
+      expect(result.unverifiedReason).toMatch(/placeholder/);
+    }
   });
 
-  it('rejects missing, malformed and all-zero keys; accepts a real-looking key', () => {
+  it('rejects missing, malformed, off-curve, all-zero and small-order keys; accepts an ordinary key', () => {
     expect(isPlaceholderSigningKey(undefined)).toBe(true);
     expect(isPlaceholderSigningKey('')).toBe(true);
     expect(isPlaceholderSigningKey('ed25519:abc')).toBe(true);
+    expect(isPlaceholderSigningKey(`ed25519:${'ab'.repeat(32)}`)).toBe(true);
     expect(isPlaceholderSigningKey(`ed25519:${ZERO_KEY}`)).toBe(true);
-    expect(isPlaceholderSigningKey(`ed25519:${'ab'.repeat(32)}`)).toBe(false);
+    for (const k of SMALL_ORDER_KEYS) expect(isPlaceholderSigningKey(`ed25519:${k}`)).toBe(true);
+    expect(isPlaceholderSigningKey(`ed25519:${REAL_KEY}`)).toBe(false);
   });
 
-  it('the all-zero key really does accept a forged signature (why it must never be verified against)', async () => {
-    expect(await verifyEd25519Signature('any message at all', FORGED_SIG, ZERO_KEY)).toBe(true);
+  it('verifyEd25519Signature rejects the bad-signature fixture for every small-order key (RFC 8032 strict)', async () => {
+    for (const k of [ZERO_KEY, ...SMALL_ORDER_KEYS]) {
+      expect(await verifyEd25519Signature('any message', BAD_SIG, k)).toBe(false);
+    }
   });
 
-  it('a placeholder pinned key leaves the registry unverified even with a "valid" forged signature', async () => {
-    ipfs.registry = registryWith([entry('@claude-flow/evil')], { registrySignature: FORGED_SIG });
+  it('a small-order pinned key is treated as a placeholder', async () => {
+    ipfs.registry = registryWith([entry('@claude-flow/evil')], { registrySignature: BAD_SIG });
+    const result = await serviceFor(`ed25519:${SMALL_ORDER_KEYS[0]}`).discoverRegistry();
+    expect(result.verified).toBe(false);
+    expect(result.unverifiedReason).toMatch(/placeholder/);
+  });
+
+  it('an all-zero pinned key leaves the registry unverified and its entries unlisted', async () => {
+    ipfs.registry = registryWith([entry('@claude-flow/evil')], { registrySignature: BAD_SIG });
     const result = await serviceFor(`ed25519:${ZERO_KEY}`).discoverRegistry();
 
     expect(result.verified).toBe(false);
@@ -141,7 +170,7 @@ describe('placeholder signing keys', () => {
 describe('discovery: an unverified registry confers no trust', () => {
   it('an unsigned registry falls back to the built-in list, labelled demo and unverified, with trust stripped', async () => {
     ipfs.registry = registryWith([entry('@claude-flow/a')]);
-    const svc = serviceFor(`ed25519:${'ab'.repeat(32)}`);
+    const svc = serviceFor(`ed25519:${REAL_KEY}`);
 
     const first = await svc.discoverRegistry();
     expect(first.success).toBe(true);
@@ -157,11 +186,20 @@ describe('discovery: an unverified registry confers no trust', () => {
     expect(second.registry!.plugins.every((p) => p.trustLevel === 'unverified')).toBe(true);
   });
 
+  it('an unverified registry lists no official plugins and no verified authors', async () => {
+    ipfs.registry = registryWith([entry('@claude-flow/a')]);
+    const result = await serviceFor(`ed25519:${REAL_KEY}`).discoverRegistry();
+    expect(result.verified).toBe(false);
+    expect(result.registry!.official).toEqual([]);
+    expect(result.registry!.authors.every((a) => !a.verified)).toBe(true);
+    expect(result.registry!.plugins.every((p) => !p.author?.verified)).toBe(true);
+  });
+
   it('a signature that does not verify is not silently treated as the registry', async () => {
     const { signed } = await signRegistry(registryWith([entry('@claude-flow/a')]));
     ipfs.registry = signed;
     // Pinned key differs from the signer.
-    const result = await serviceFor(`ed25519:${'ab'.repeat(32)}`).discoverRegistry();
+    const result = await serviceFor(`ed25519:${REAL_KEY}`).discoverRegistry();
     expect(result.verified).toBe(false);
     expect(result.demo).toBe(true);
     expect(result.unverifiedReason).toMatch(/does not verify/);
@@ -169,7 +207,7 @@ describe('discovery: an unverified registry confers no trust', () => {
 
   it('with verification disabled the fetched registry is used but every entry is unverified', async () => {
     ipfs.registry = registryWith([entry('@claude-flow/a')]);
-    const result = await serviceFor(`ed25519:${'ab'.repeat(32)}`, { requireVerification: false }).discoverRegistry();
+    const result = await serviceFor(`ed25519:${REAL_KEY}`, { requireVerification: false }).discoverRegistry();
     expect(result.success).toBe(true);
     expect(result.demo).toBeUndefined();
     expect(result.verified).toBe(false);
@@ -190,7 +228,7 @@ describe('discovery: an unverified registry confers no trust', () => {
     process.env.CLAUDE_FLOW_STRICT_PLUGINS = 'true';
     expect(isStrictPluginMode()).toBe(true);
     ipfs.registry = registryWith([entry('@claude-flow/a')]);
-    const result = await serviceFor(`ed25519:${'ab'.repeat(32)}`).discoverRegistry();
+    const result = await serviceFor(`ed25519:${REAL_KEY}`).discoverRegistry();
     expect(result.success).toBe(false);
     expect(result.registry).toBeUndefined();
     expect(result.verified).toBe(false);
@@ -251,5 +289,38 @@ describe('plugins install: unverified registry entries get no registry trust', (
     } finally {
       DEFAULT_PLUGIN_STORE_CONFIG.registries.forEach((r, i) => { r.publicKey = original[i]; });
     }
+  });
+});
+
+describe('MCP transfer_plugin-* tools report registry status', () => {
+  const call = async (name: string, input: Record<string, unknown> = {}) => {
+    const tool = transferTools.find((t) => t.name === name)!;
+    const res = await tool.handler(input as never);
+    return JSON.parse((res.content[0] as { text: string }).text);
+  };
+
+  beforeEach(() => {
+    // The default registry, served unsigned as the live CID is.
+    ipfs.registry = registryWith([entry('@claude-flow/neural')]);
+  });
+
+  it('transfer_plugin-official claims nothing as official when the registry is unverified', async () => {
+    const out = await call('transfer_plugin-official');
+    expect(out.plugins).toEqual([]);
+    expect(out.registry.verified).toBe(false);
+    expect(out.registry.unverifiedReason).toMatch(/unsigned/);
+  });
+
+  it('transfer_plugin-featured, -search and -info carry the status and unverified entries', async () => {
+    const featured = await call('transfer_plugin-featured', { limit: 3 });
+    expect(featured.registry.verified).toBe(false);
+    expect(featured.plugins.every((p: { trustLevel: string }) => p.trustLevel === 'unverified')).toBe(true);
+
+    const search = await call('transfer_plugin-search', { query: 'neural' });
+    expect(search.registry.verified).toBe(false);
+
+    const info = await call('transfer_plugin-info', { name: '@claude-flow/neural' });
+    expect(info.trustLevel).toBe('unverified');
+    expect(info.registry).toEqual(expect.objectContaining({ verified: false }));
   });
 });

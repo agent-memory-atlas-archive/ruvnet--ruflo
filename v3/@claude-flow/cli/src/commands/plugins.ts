@@ -141,6 +141,9 @@ const listCommand: Command = {
       if (official) {
         plugins = getOfficialPlugins(result.registry);
         title = 'Official Plugins';
+        if (result.verified !== true) {
+          output.writeln(output.warning('No plugin is shown as official: only a verified registry can say which are.'));
+        }
       } else if (featured) {
         plugins = getFeaturedPlugins(result.registry);
         title = 'Featured Plugins';
@@ -262,7 +265,9 @@ const installCommand: Command = {
       type: 'boolean',
       description:
         'With CLAUDE_FLOW_STRICT_PLUGINS=true, install from npm even though the plugin registry is not verified. ' +
-        'The plugin still gets no registry trust.',
+        'The plugin still gets no registry trust. Strict mode gates on the registry, not the package: while the ' +
+        'registry is unverified every npm install is refused, listed or not; once it verifies, a package it does ' +
+        'not list installs without this flag, but also without registry trust.',
       default: false,
     },
     { name: 'registry', short: 'r', type: 'string', description: 'Registry to use' },

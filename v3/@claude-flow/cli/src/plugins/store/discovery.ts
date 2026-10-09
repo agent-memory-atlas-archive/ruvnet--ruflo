@@ -130,13 +130,34 @@ export interface PluginDiscoveryResult {
 }
 
 /**
- * Strip registry-asserted trust from a registry that was not verified. Its trust labels are
- * just claims made by whoever served (or hardcoded) the list.
+ * Strip registry-asserted trust from a registry that was not verified. Its trust labels, its
+ * `official` list and its author verification are just claims made by whoever served (or
+ * hardcoded) the list.
  */
 function withoutRegistryTrust(registry: PluginRegistry): PluginRegistry {
   return {
     ...registry,
-    plugins: registry.plugins.map((p) => ({ ...p, trustLevel: 'unverified' as const, verified: false })),
+    plugins: registry.plugins.map((p) => ({
+      ...p,
+      trustLevel: 'unverified' as const,
+      verified: false,
+      ...(p.author ? { author: { ...p.author, verified: false } } : {}),
+    })),
+    official: [],
+    authors: (registry.authors ?? []).map((a) => ({ ...a, verified: false })),
+  };
+}
+
+/** Registry-level verification status, for callers that report registry data. */
+export function registryStatus(result: PluginDiscoveryResult): {
+  verified: boolean;
+  unverifiedReason?: string;
+  source?: string;
+} {
+  return {
+    verified: result.verified === true,
+    ...(result.verified === true ? {} : { unverifiedReason: result.unverifiedReason ?? 'registry not verified' }),
+    ...(result.source ? { source: result.source } : {}),
   };
 }
 

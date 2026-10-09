@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'crypto';
+import { ExtendedPoint } from '@noble/ed25519';
 
 /**
  * Permissions a plugin may declare and still have its hooks and commands
@@ -130,14 +131,19 @@ export function isStrictPluginMode(env: NodeJS.ProcessEnv = process.env): boolea
 
 /**
  * A signing key that cannot vouch for anything: missing, not 32 bytes of hex,
- * or all zeros (the placeholder in `trust/trust-anchors.json`). The all-zero
- * key is also a small-order Ed25519 point, for which a fixed forged signature
- * verifies against every message under ZIP-215 rules, so it must never be
+ * not a curve point, or a small-order point — which includes the all-zero
+ * placeholder in `trust/trust-anchors.json`. Signatures can be forged against
+ * small-order keys under ZIP-215 verification, so such a key must never be
  * handed to a verifier.
  */
 export function isPlaceholderSigningKey(key: unknown): boolean {
   if (typeof key !== 'string') return true;
   const hex = key.trim().replace(/^ed25519:/i, '');
   if (!/^[0-9a-f]{64}$/i.test(hex)) return true;
-  return /^0+$/.test(hex);
+  try {
+    // zip215=true decodes every encoding a lenient verifier would accept.
+    return ExtendedPoint.fromHex(hex, true).isSmallOrder();
+  } catch {
+    return true;
+  }
 }
