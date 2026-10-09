@@ -79,26 +79,60 @@ export function helperStatusLineCommand(scope: HelperScope, windows = IS_WINDOWS
   return `sh -c 'D="${projVar}"; [ -f "$D/${STATUSLINE_SCRIPT}" ] || D="${homeVar}"; exec node "$D/${STATUSLINE_SCRIPT}"'`;
 }
 
-const POSIX_PROBE = /^sh -c 'D="\$\{CLAUDE_PROJECT_DIR:-\.\}"; \[ -f "\$D\/(\.claude\/helpers\/[\w.-]+)" \] \|\| D="\$\{HOME\}"; exec node "\$D\/\1"( [\w:-]+)?'$/;
-const WINDOWS_PROBE = /^cmd \/c "IF EXIST "%CLAUDE_PROJECT_DIR%\\(\.claude\\helpers\\[\w.-]+)" \(node "%CLAUDE_PROJECT_DIR%\\\1"( [\w:-]+)?\) ELSE \(node "%USERPROFILE%\\\1"\2\)"$/;
-// `ruflo init --upgrade` wrote these git-root forms (#1259, #1284, #2450).
-const GIT_ROOT_IMPORT = /^node -e "var c=require\('child_process'\),p=require\('path'\),u=require\('url'\),r;try\{r=c\.execSync\('git rev-parse --show-toplevel',\{encoding:'utf8'\}\)\.trim\(\)\}catch\(e\)\{r=process\.cwd\(\)\}var f=p\.join\(r,'(\.claude\/helpers\/[\w.-]+)'\);import\(u\.pathToFileURL\(f\)\.href\)"( [\w:-]+)?$/;
-const GIT_ROOT_STATUSLINE = `node -e "var c=require('child_process'),p=require('path'),r;try{r=c.execSync('git rev-parse --show-toplevel',{encoding:'utf8'}).trim()}catch(e){r=process.cwd()}var s=p.join(r,'.claude/helpers/statusline.cjs');process.argv.splice(1,0,s);require(s)"`;
+// Helpers ruflo installs under .claude/helpers that settings can launch.
+const RUFLO_HELPERS = [
+  'hook-handler.cjs', 'auto-memory-hook.mjs', 'statusline.cjs', 'ruflo-hook.cjs', 'router.cjs',
+  'session.cjs', 'memory.cjs', 'intelligence.cjs', 'learning-service.mjs', 'metrics-db.mjs',
+  'context-persistence-hook.mjs',
+];
+const HELPER_REF = new RegExp(`\\.claude[\\\\/]helpers[\\\\/](${RUFLO_HELPERS.map((h) => h.replace('.', '\\.')).join('|')})`, 'g');
+// How a ruflo-generated command reached the project's copy of a helper:
+// CLAUDE_PROJECT_DIR (sh, cmd or node -e), `git rev-parse --show-toplevel`,
+// or a path relative to the cwd.
+const PROJECT_REACH = /CLAUDE_PROJECT_DIR|git rev-parse --show-toplevel/;
+const RELATIVE_REF = /(?:^|[\s"'])(?:\.[\\/])?\.claude[\\/]helpers[\\/]/;
+const SHELL_CHAINING = /&&|\|\||[;|<>`]/;
+const ARGS = /^(?: [\w:.=-]+)*$/;
+// The fixed shell scaffolding of the #1943 probes, which itself contains `;`
+// and `||`; removed before checking the rest for chaining.
+const PROBE_PREAMBLE = /D="\$\{CLAUDE_PROJECT_DIR:-\.\}"; \[ -f "\$D\/\.claude\/helpers\/[\w.-]+" \] \|\| D="\$\{HOME\}"; /;
+const IF_EXIST_PREAMBLE = /"IF EXIST "%CLAUDE_PROJECT_DIR%\\\.claude\\helpers\\[\w.-]+" \(node "%CLAUDE_PROJECT_DIR%\\\.claude\\helpers\\[\w.-]+"(?: [\w:.=-]+)*\) ELSE \(/;
 
 /**
- * Rewrite a command ruflo itself generated with a project lookup into the
- * pinned user-level form. Returns null for anything else (user-authored
- * commands are left alone).
+ * Rewrite a command that runs one of ruflo's helpers from the opened project
+ * into the pinned user-level form, keeping its subcommand. Covers every form
+ * ruflo has shipped: the #1943 sh/cmd probes, the earlier
+ * `${CLAUDE_PROJECT_DIR:-.}` / `%CLAUDE_PROJECT_DIR%` forms, the ADR-059
+ * `git rev-parse` node -e forms (CJS and ESM, with or without argv.splice),
+ * and plain relative paths. Returns null for anything else, so user-authored
+ * commands (other scripts, redirects, chains) are left alone.
  */
 export function pinToUserHelpers(command: string, windows = IS_WINDOWS): string | null {
-  if (command === GIT_ROOT_STATUSLINE || command === helperStatusLineCommand('project', windows)) {
-    return helperStatusLineCommand('user', windows);
+  const refs = [...command.matchAll(HELPER_REF)];
+  if (refs.length === 0) return null;
+  const helper = refs[refs.length - 1][1];
+  if (refs.some((m) => m[1] !== helper)) return null;
+  if (!PROJECT_REACH.test(command) && !RELATIVE_REF.test(command)) return null;
+
+  let args: string;
+  const nodeEval = /^node -e "(.*)"((?: [\w:.=-]+)*)$/.exec(command);
+  if (nodeEval) {
+    if (!/git rev-parse --show-toplevel|CLAUDE_PROJECT_DIR/.test(nodeEval[1])) return null;
+    args = nodeEval[2];
+  } else {
+    if (!/^(?:sh -c '|cmd \/c |node )/.test(command)) return null;
+    // Drop the shell wrapper's closing quote / paren, then split around the
+    // last helper reference: the head launches it, the tail is its argv.
+    const body = command.replace(/'$/, '').replace(/\)"$/, '');
+    const last = refs[refs.length - 1];
+    const head = body.slice(0, last.index ?? 0).replace(PROBE_PREAMBLE, '').replace(IF_EXIST_PREAMBLE, '');
+    let tail = body.slice((last.index ?? 0) + last[0].length);
+    if (tail.startsWith('"')) tail = tail.slice(1);
+    if (SHELL_CHAINING.test(head) || SHELL_CHAINING.test(tail)) return null;
+    args = tail.trimEnd();
   }
-  const posix = POSIX_PROBE.exec(command);
-  if (posix) return helperHookCommand(posix[1], (posix[2] ?? '').trim(), 'user', windows);
-  const win = WINDOWS_PROBE.exec(command);
-  if (win) return helperHookCommand(win[1].replace(/\\/g, '/'), (win[2] ?? '').trim(), 'user', windows);
-  const gitRoot = GIT_ROOT_IMPORT.exec(command);
-  if (gitRoot) return helperHookCommand(gitRoot[1], (gitRoot[2] ?? '').trim(), 'user', windows);
-  return null;
+  if (!ARGS.test(args)) return null;
+  const script = `.claude/helpers/${helper}`;
+  if (helper === 'statusline.cjs' && args === '') return helperStatusLineCommand('user', windows);
+  return helperHookCommand(script, args.trim(), 'user', windows);
 }

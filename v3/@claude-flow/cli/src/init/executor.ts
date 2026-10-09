@@ -760,7 +760,7 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
         }
       } else {
         // Create new settings.json with defaults
-        const defaultSettings = generateSettings(DEFAULT_INIT_OPTIONS);
+        const defaultSettings = generateSettings({ ...DEFAULT_INIT_OPTIONS, targetDir });
         fs.writeFileSync(settingsPath, JSON.stringify(defaultSettings, null, 2), 'utf-8');
         result.created.push('.claude/settings.json');
         result.settingsUpdated = ['Created new settings.json with Agent Teams'];
