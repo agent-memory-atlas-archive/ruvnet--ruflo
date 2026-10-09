@@ -119,3 +119,25 @@ export function parseSha256Checksum(checksum: unknown): string | null {
 export function sha256Hex(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
+
+/**
+ * Whether `CLAUDE_FLOW_STRICT_PLUGINS=true` (ADR-145): an unverified plugin
+ * registry is then an error, not a warning.
+ */
+export function isStrictPluginMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.CLAUDE_FLOW_STRICT_PLUGINS ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * A signing key that cannot vouch for anything: missing, not 32 bytes of hex,
+ * or all zeros (the placeholder in `trust/trust-anchors.json`). The all-zero
+ * key is also a small-order Ed25519 point, for which a fixed forged signature
+ * verifies against every message under ZIP-215 rules, so it must never be
+ * handed to a verifier.
+ */
+export function isPlaceholderSigningKey(key: unknown): boolean {
+  if (typeof key !== 'string') return true;
+  const hex = key.trim().replace(/^ed25519:/i, '');
+  if (!/^[0-9a-f]{64}$/i.test(hex)) return true;
+  return /^0+$/.test(hex);
+}
