@@ -4944,15 +4944,14 @@ const tokenOptimizeCommand: Command = {
     try {
       // Check if agentic-flow v3 is available
       const rb = await import('agentic-flow/reasoningbank').catch(() => null);
+      // No root-entry fallback: importing 'agentic-flow' runs its CLI main()
+      // in 3.0.0-alpha.x, and the root re-exports this same reasoningbank
+      // module, so it cannot load when this subpath did not.
       if (rb) {
         agenticFlowAvailable = true;
         if (typeof rb.retrieveMemories === 'function') {
           reasoningBank = rb;
         }
-      } else {
-        // Legacy check for older agentic-flow
-        const af = await import('agentic-flow').catch(() => null);
-        if (af) agenticFlowAvailable = true;
       }
 
       const versionLabel = agenticFlowAvailable ? `agentic-flow v3 detected (ReasoningBank: ${reasoningBank ? 'active' : 'unavailable'})` : 'agentic-flow not available (using fallbacks)';

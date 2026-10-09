@@ -2460,28 +2460,8 @@ async function loadLocalEmbeddingChain(verbose = false, startTime = Date.now()):
       }
     }
 
-    // Legacy fallback: Check for agentic-flow core embeddings
-    const agenticFlow = await import('agentic-flow').catch(() => null);
-
-    if (agenticFlow && (agenticFlow as any).embeddings) {
-      if (verbose) {
-        console.log('Loading agentic-flow embedding model...');
-      }
-
-      embeddingModelState = {
-        loaded: true,
-        model: (agenticFlow as any).embeddings,
-        tokenizer: null,
-        dimensions: 768
-      };
-
-      return {
-        success: true,
-        dimensions: 768,
-        modelName: 'agentic-flow',
-        loadTime: Date.now() - startTime
-      };
-    }
+    // No agentic-flow root-entry fallback: no published root exports
+    // `embeddings`, and importing it runs its CLI main() in 3.0.0-alpha.x.
 
     // No ONNX model available - use fallback
     embeddingModelState = {
