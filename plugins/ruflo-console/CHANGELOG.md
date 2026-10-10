@@ -2,6 +2,10 @@
 
 Newest first. One `## <version> — <date>` heading per version, then `feat:`, `fix:`, `breaking:` and `chore:` bullets (ADR-478). Built from git history; older versions: `git log -- plugins/ruflo-console`.
 
+## 0.42.2 — 2026-10-10
+- fix: numbers read from CLI JSON are bounded at the reader (a count of 1e999 no longer draws Infinity on the band); an unreadable count stays visible as unknown rather than a measured 0, and a listed finding is never hidden by an under-reporting summary (#3822)
+- fix: a mission resume made by Claude keeps each task's hand-out count, so resuming cannot buy more billed hand-outs after the limit paused the mission (#3823)
+
 ## 0.42.1 — 2026-10-10
 - fix: Mission Control create retries only a real policy-state lock timeout (and a silent failure or a wait that ran out), reads the CLI's own Result: line rather than the Parameters object, undoes every open task of the mission when it must abort, asks the mission record to cancel, and reads the stores back so the result says what they show, not what was asked (#3945)
 - fix: a run that reports for itself (mission create, the ADR page writes) now becomes the console's outcome when it ends, so console_state.lastResult carries how it ended however long it took (#3945)
