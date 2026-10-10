@@ -204,7 +204,7 @@ describe('fallbackLouvain complexity fix', () => {
     function bestOf(fn: (n: string[], e: Edge[]) => unknown, nodes: string[], edges: Edge[]): number {
       fn(nodes, edges); // warmup (JIT)
       let best = Infinity;
-      for (let t = 0; t < 3; t++) {
+      for (let t = 0; t < 2; t++) {
         const start = performance.now();
         fn(nodes, edges);
         const dur = performance.now() - start;
@@ -229,5 +229,8 @@ describe('fallbackLouvain complexity fix', () => {
     expect(legacyGrowth).toBeGreaterThan(20); // legacy is genuinely ~quadratic
     expect(currentGrowth).toBeLessThan(legacyGrowth / 2); // fixed algorithm is materially better
     expect(currentLarge).toBeLessThan(legacyLarge); // and strictly faster in absolute terms at n=1600
-  });
+  }, 30000); // the legacy O(n^2) algorithm at n=1600 (warmup+2 trials, both algorithms,
+  // both sizes) can run well past vitest's default 5000ms per-test timeout
+  // on a loaded/shared CI runner — same failure mode independently hit and
+  // fixed by PR #3754 (2026-10-05).
 });
