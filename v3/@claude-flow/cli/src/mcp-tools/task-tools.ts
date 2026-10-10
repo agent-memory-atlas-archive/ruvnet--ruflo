@@ -374,6 +374,7 @@ export const taskTools: MCPTool[] = [
         // Worker effects run AFTER the task store is saved, as task_complete does: a failed save must not leave
         // workers freed and counted against a task that still reads unfinished.
         let afterSave: (() => void) | undefined;
+        const previouslyAssigned = [...task.assignedTo];
         if (status !== undefined) {
           const newStatus = status;
           const wasCompleted = task.status === 'completed';
@@ -386,13 +387,13 @@ export const taskTools: MCPTool[] = [
           // returns early because the status already reads completed.
           if (newStatus === 'failed' || newStatus === 'cancelled') {
             task.completedAt = new Date().toISOString();
-            afterSave = () => releaseAgents(task.assignedTo, taskId);
+            afterSave = () => releaseAgents(previouslyAssigned, taskId);
           }
           if (newStatus === 'completed' && !wasCompleted) {
             task.completedAt = new Date().toISOString();
             // Credited only to a worker still holding this task, so complete -> pending -> complete
             // (no reassignment in between) never counts the same work twice.
-            afterSave = () => updateAgents(task.assignedTo, (agent) => {
+            afterSave = () => updateAgents(previouslyAssigned, (agent) => {
               if (agent.currentTask === taskId) {
                 agent.status = 'idle';
                 agent.currentTask = null;
@@ -408,6 +409,20 @@ export const taskTools: MCPTool[] = [
         if (task.status === 'completed') task.progress = 100;
         if (input.assignTo) {
           task.assignedTo = input.assignTo as string[];
+          // Reassignment must update the same worker stores as task_assign.
+          // Terminal transitions release/credit the workers that held the task
+          // before this update; replacement assignees did not perform that work.
+          if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
+            afterSave = () => {
+              releaseAgents(previouslyAssigned.filter(id => !task.assignedTo.includes(id)), taskId);
+              updateAgents(task.assignedTo, agent => {
+                agent.status = 'busy';
+                agent.currentTask = taskId;
+              });
+            };
+          } else if (!afterSave) {
+            afterSave = () => releaseAgents(previouslyAssigned, taskId);
+          }
         }
         if (input.result && typeof input.result === 'object') {
           task.result = input.result as Record<string, unknown>;
