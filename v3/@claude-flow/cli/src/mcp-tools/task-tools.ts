@@ -100,7 +100,7 @@ function updateAgents(agentIds: string[], mutate: (agent: AgentRow) => void): vo
       if (!store.agents) continue;
       let touched = false;
       for (const id of agentIds) {
-        if (store.agents[id]) {
+        if (Object.prototype.hasOwnProperty.call(store.agents, id) && store.agents[id]) {
           mutate(store.agents[id]);
           touched = true;
         }
@@ -366,6 +366,11 @@ export const taskTools: MCPTool[] = [
         return { success: false, error: `status must be one of ${TASK_STATUSES.join(', ')}` };
       }
 
+      if (input.assignTo !== undefined && (!Array.isArray(input.assignTo)
+        || !input.assignTo.every(id => validateIdentifier(id, 'assignTo').valid))) {
+        return { success: false, error: 'assignTo must be an array of agent ids' };
+      }
+
       const store = loadTaskStore();
       const taskId = input.taskId as string;
       const task = store.tasks[taskId];
@@ -374,7 +379,7 @@ export const taskTools: MCPTool[] = [
         // Worker effects run AFTER the task store is saved, as task_complete does: a failed save must not leave
         // workers freed and counted against a task that still reads unfinished.
         let afterSave: (() => void) | undefined;
-        const previouslyAssigned = [...task.assignedTo];
+        const previouslyAssigned = Array.isArray(task.assignedTo) ? [...task.assignedTo] : [];
         if (status !== undefined) {
           const newStatus = status;
           const wasCompleted = task.status === 'completed';
@@ -415,7 +420,8 @@ export const taskTools: MCPTool[] = [
           if (!['completed', 'failed', 'cancelled'].includes(task.status)) {
             afterSave = () => {
               releaseAgents(previouslyAssigned.filter(id => !task.assignedTo.includes(id)), taskId);
-              updateAgents(task.assignedTo, agent => {
+              // Echoing retained assignees must not take them from another task or re-credit completed work.
+              updateAgents(task.assignedTo.filter(id => !previouslyAssigned.includes(id)), agent => {
                 agent.status = 'busy';
                 agent.currentTask = taskId;
               });
