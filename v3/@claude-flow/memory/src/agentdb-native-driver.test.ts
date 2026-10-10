@@ -191,16 +191,31 @@ function dbWithStaleLock(dir: string): string {
   return dbPath;
 }
 
+/**
+ * vitest applies the queued doMock/doUnmock entries for one path in
+ * resolve-completion order, not call order (see graph-writer-shared-sqlite-3693
+ * in the CLI). Never leave two queued: apply each change with an import
+ * before the next is queued.
+ */
+async function clearAgentdbMock(): Promise<void> {
+  vi.resetModules();
+  vi.doUnmock('agentdb');
+  await import('agentdb').catch(() => null);
+  vi.resetModules();
+}
+
+async function mockAgentdb(module: unknown): Promise<void> {
+  await clearAgentdbMock();
+  vi.doMock('agentdb', () => module as never);
+  await import('agentdb');
+}
+
 describe('AgentDB construction sites apply useHostSqliteDriver', () => {
-  afterEach(() => {
-    vi.doUnmock('agentdb');
-    vi.resetModules();
-  });
+  afterEach(clearAgentdbMock);
 
   it('ControllerRegistry.initAgentDB', async () => {
     const fake = agentdbModuleRecordingHandle();
-    vi.resetModules();
-    vi.doMock('agentdb', () => fake.module);
+    await mockAgentdb(fake.module);
     const { ControllerRegistry } = await import('./controller-registry.js');
 
     await (new ControllerRegistry() as any).initAgentDB({ dbPath: ':memory:' });
@@ -212,8 +227,7 @@ describe('AgentDB construction sites apply useHostSqliteDriver', () => {
 
   it('AgentDBBackend.initialize', async () => {
     const fake = agentdbModuleRecordingHandle();
-    vi.resetModules();
-    vi.doMock('agentdb', () => fake.module);
+    await mockAgentdb(fake.module);
     const { AgentDBBackend } = await import('./agentdb-backend.js');
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -228,17 +242,13 @@ describe('AgentDB construction sites apply useHostSqliteDriver', () => {
 });
 
 describe('AgentDB construction sites reroute the stale-lock retry instance too', () => {
-  afterEach(() => {
-    vi.doUnmock('agentdb');
-    vi.resetModules();
-  });
+  afterEach(clearAgentdbMock);
 
   it('ControllerRegistry.initAgentDB retry', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cf-agentdb-retry-'));
     try {
       const fake = agentdbModuleRecordingHandle(true);
-      vi.resetModules();
-      vi.doMock('agentdb', () => fake.module);
+      await mockAgentdb(fake.module);
       const { ControllerRegistry } = await import('./controller-registry.js');
 
       await (new ControllerRegistry() as any).initAgentDB({ dbPath: dbWithStaleLock(dir) });
@@ -257,8 +267,7 @@ describe('AgentDB construction sites reroute the stale-lock retry instance too',
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const fake = agentdbModuleRecordingHandle(true);
-      vi.resetModules();
-      vi.doMock('agentdb', () => fake.module);
+      await mockAgentdb(fake.module);
       const { AgentDBBackend } = await import('./agentdb-backend.js');
 
       await new AgentDBBackend({ dbPath: dbWithStaleLock(dir) } as any).initialize();
