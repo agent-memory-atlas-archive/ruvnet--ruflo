@@ -252,13 +252,13 @@ export class ResourceRegistry extends EventEmitter {
    * Notify subscribers of resource update
    */
   async notifyUpdate(uri: string): Promise<void> {
+    // Reads must observe updates even when no client subscribes to notifications.
+    this.cache.delete(uri);
+
     const subs = this.subscriptions.get(uri);
     if (!subs || subs.length === 0) {
       return;
     }
-
-    // Invalidate cache
-    this.cache.delete(uri);
 
     // Read fresh content
     const { contents } = await this.read(uri);
