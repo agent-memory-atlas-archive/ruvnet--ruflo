@@ -20,8 +20,11 @@ export type ActionSpec = {
   verifyLocal?: (host: Pick<Host, 'fs' | 'home'>) => Promise<boolean>
   /** Reads only: runs at once, without the confirm step, and shows what the CLI printed. */
   isReadOnly?: boolean
-  /** Not a ruflo CLI call: what runs instead once confirmed (a terminal harness), reporting for itself. */
-  run?: () => Promise<void>
+  /**
+   * Not a ruflo CLI call: what runs instead once confirmed (a terminal harness), reporting for itself. A run that answers a RunReport also has
+   * the runner keep it as the console's outcome, so what console_state shows Claude (and `/ruflo yes` prints) is how the run ended.
+   */
+  run?: () => Promise<void | RunReport>
   /** Where the ask came from in its view (`goal`, `controls`, `guide`): a view that draws its own confirm puts it under that field. */
   scope?: string
   /** The command line the confirm row shows when it is not `ruflo <args>`. */
@@ -51,6 +54,9 @@ export type ActionSpec = {
    */
   findings?: Findings
 }
+
+/** How a run that reports for itself ended, in the shape of the console's outcome. */
+export type RunReport = { label: string; ok: boolean; detail: string; lines?: string[] }
 
 export const exec = (tool: string, params: Record<string, string>) => ['mcp', 'exec', '-t', tool, '-p', JSON.stringify(params)] as const
 const SAFE_WORD = /^[A-Za-z0-9_.-]{1,40}$/

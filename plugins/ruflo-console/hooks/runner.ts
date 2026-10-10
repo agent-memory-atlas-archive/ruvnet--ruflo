@@ -58,9 +58,19 @@ export function createRunner(state: State, host: Host, deps: RunnerDeps): Runner
   async function execute(spec: ActionSpec): Promise<void> {
     // A harness run reports into the terminal and may take minutes: it does not hold the other buttons.
     if (spec.run !== undefined) {
+      // The outcome slot as this run starts. Every writer replaces the object (never edits it), so "still this object" means no other
+      // action reported meanwhile: exact, where comparing millisecond stamps let a same-millisecond result be overwritten.
+      const outcomeAtStart = state.outcome
       const running = spec.run()
 
-      background = running.then(() => undefined, () => undefined)
+      // A run that answers how it ended becomes the outcome when it ends, however long after the confirm that is: the page shows it on its
+      // own panel, and this is the one place console_state and `/ruflo yes` read (a long mission create used to leave an older result there).
+      // One outcome per action: when another action reported meanwhile, its outcome stays, and this one goes to the Events feed instead.
+      background = running.then(report => {
+        if (report === undefined || report === null) return
+        if (state.outcome === outcomeAtStart) say(report.label, report.ok, report.detail, report.lines)
+        else record(state.events, [{ atMs: Date.now(), kind: 'tools', text: `${report.ok ? '✓' : '✗'} ${plain(report.label, 80)}: ${plain(report.detail, 160)} (finished after a newer result)` }])
+      }, () => undefined)
 
       // A read that runs its own command (a skills search) is waited on, so `/ruflo run` answers with what it found.
       if (spec.isReadOnly === true) await running

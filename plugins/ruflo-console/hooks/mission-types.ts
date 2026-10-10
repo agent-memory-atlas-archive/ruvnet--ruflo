@@ -45,7 +45,8 @@ export type McState = {
   /** AIDefence's verdict on the goal (null: not screened yet or the screen is off), and whether the screen is on. */
   screen: Screen | null
   isScreenOn: boolean
-  last: { label: string; ok: boolean; detail: string; atMs?: number; next?: string } | null
+  /** `lines` add what one line cannot hold (which tasks are still pending after a failed create). */
+  last: { label: string; ok: boolean; detail: string; atMs?: number; next?: string; lines?: string[] } | null
 }
 
 export type MissionActions = {
