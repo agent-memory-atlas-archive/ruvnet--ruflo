@@ -141,10 +141,10 @@ describe('#3693 graph writer idle close vs live AgentDB handle', () => {
     expect(resolveAgentdbBetterSqlite3(agentdbEntry)).toBe(HolderCtor);
   });
 
-  // @claude-flow/memory >= 3.0.3 opens AgentDB's handle with ITS better-sqlite3
+  // @claude-flow/memory >= 3.0.4 opens AgentDB's handle with ITS better-sqlite3
   // (agentdb-native-driver.js), so that copy is the holder the CLI must share.
-  it('owner is @claude-flow/memory when it routes AgentDB through its own driver', async () => {
-    if (!native) return;
+  it('owner is @claude-flow/memory when it routes AgentDB through its own driver', async (ctx) => {
+    if (!native) ctx.skip(); // reported as skipped, never a silent pass
     const memDist = join(root, 'node_modules', '@claude-flow', 'memory', 'dist');
     const memNm = join(root, 'node_modules', '@claude-flow', 'memory', 'node_modules');
     mkdirSync(memDist, { recursive: true });
@@ -164,7 +164,7 @@ describe('#3693 graph writer idle close vs live AgentDB handle', () => {
     expect(MemoryCtor).not.toBe(HolderCtor);
   });
 
-  it('owner falls back to agentdb when @claude-flow/memory has no driver (memory <= 3.0.2)', async () => {
+  it('owner falls back to agentdb when @claude-flow/memory has no driver (memory <= 3.0.3)', async () => {
     const oldMemDist = join(root, 'old-memory', 'dist');
     mkdirSync(oldMemDist, { recursive: true });
     writeFileSync(join(oldMemDist, 'index.js'), '');

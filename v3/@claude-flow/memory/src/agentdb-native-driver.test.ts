@@ -7,12 +7,13 @@
  */
 
 import { afterAll, afterEach, describe, it, expect, vi } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { getHostSqliteDriver, useHostSqliteDriver } from './agentdb-native-driver.js';
+import { AGENTDB_CONCURRENT_MODIFICATION_CODE } from './agentdb-lock-guard.js';
 
 function fakeAgentDB(config: { forceWasm?: boolean } = {}) {
   const calls: string[] = [];
@@ -154,21 +155,40 @@ describe('useHostSqliteDriver with a nested agentdb copy', () => {
   });
 });
 
-/** Fake agentdb module whose AgentDB records the handle its initialize() opened. */
-function agentdbModuleRecordingHandle() {
+/**
+ * Fake agentdb module whose AgentDB records the handle its initialize() opened.
+ * With `failFirstInit`, the first instance fails like agentdb alpha.20 does on a
+ * stale `<db>.agentdb.lock`, so withAgentdbLockRecovery retries with a new instance.
+ */
+function agentdbModuleRecordingHandle(failFirstInit = false) {
   const opened: unknown[] = [];
+  let instances = 0;
   class AgentDB {
     config: Record<string, unknown>;
     usingWasm = true;
     database: unknown = null;
+    readonly instance = ++instances;
     constructor(config: Record<string, unknown> = {}) { this.config = config; }
     async initializeDatabase(_dbPath: string): Promise<unknown> { return { agentdbOwnLoader: true }; }
     async initialize() {
+      if (failFirstInit && this.instance === 1) {
+        throw Object.assign(new Error('concurrent modification'), { code: AGENTDB_CONCURRENT_MODIFICATION_CODE });
+      }
       this.database = await this.initializeDatabase((this.config.dbPath as string) || ':memory:');
       opened.push(this.database);
     }
   }
-  return { opened, module: { AgentDB, default: AgentDB } };
+  return { opened, instances: () => instances, module: { AgentDB, default: AgentDB } };
+}
+
+/** A db path whose `<db>.agentdb.lock` belongs to a dead writer (provably stale). */
+function dbWithStaleLock(dir: string): string {
+  const dbPath = join(dir, 'agentdb-memory.db');
+  const lock = `${dbPath}.agentdb.lock`;
+  writeFileSync(lock, '2147483000\n');
+  const old = new Date(Date.now() - 3600_000);
+  utimesSync(lock, old, old);
+  return dbPath;
 }
 
 describe('AgentDB construction sites apply useHostSqliteDriver', () => {
@@ -204,6 +224,53 @@ describe('AgentDB construction sites apply useHostSqliteDriver', () => {
     expect(fake.opened).toHaveLength(1);
     expect(fake.opened[0]).toBeInstanceOf(Database);
     (fake.opened[0] as Database.Database).close();
+  });
+});
+
+describe('AgentDB construction sites reroute the stale-lock retry instance too', () => {
+  afterEach(() => {
+    vi.doUnmock('agentdb');
+    vi.resetModules();
+  });
+
+  it('ControllerRegistry.initAgentDB retry', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cf-agentdb-retry-'));
+    try {
+      const fake = agentdbModuleRecordingHandle(true);
+      vi.resetModules();
+      vi.doMock('agentdb', () => fake.module);
+      const { ControllerRegistry } = await import('./controller-registry.js');
+
+      await (new ControllerRegistry() as any).initAgentDB({ dbPath: dbWithStaleLock(dir) });
+
+      expect(fake.instances()).toBe(2);
+      expect(fake.opened).toHaveLength(1);
+      expect(fake.opened[0]).toBeInstanceOf(Database);
+      (fake.opened[0] as Database.Database).close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AgentDBBackend.initialize retry', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cf-agentdb-retry-'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const fake = agentdbModuleRecordingHandle(true);
+      vi.resetModules();
+      vi.doMock('agentdb', () => fake.module);
+      const { AgentDBBackend } = await import('./agentdb-backend.js');
+
+      await new AgentDBBackend({ dbPath: dbWithStaleLock(dir) } as any).initialize();
+
+      expect(fake.instances()).toBe(2);
+      expect(fake.opened).toHaveLength(1);
+      expect(fake.opened[0]).toBeInstanceOf(Database);
+      (fake.opened[0] as Database.Database).close();
+    } finally {
+      errors.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

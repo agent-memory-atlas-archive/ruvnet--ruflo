@@ -3,9 +3,9 @@
  * AgentDB with its own better-sqlite3 (Node 24 Statement-GC abort): the CLI's
  * shared loader must hand out the exact constructor AgentDB's handle uses.
  *
- * The installed @claude-flow/memory may be the workspace source (>= 3.0.3,
+ * The installed @claude-flow/memory may be the workspace source (>= 3.0.4,
  * routes AgentDB through getHostSqliteDriver) or a published copy that does
- * not (<= 3.0.2, AgentDB loads its own); both must keep one copy.
+ * not (<= 3.0.3, AgentDB loads its own); both must keep one copy.
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';

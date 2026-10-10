@@ -12,7 +12,7 @@
  *
  * Resolve the constructor from the same place AgentDB's handle is opened with,
  * so both share one SQLite instance (and its connection bookkeeping):
- *  - @claude-flow/memory >= 3.0.3 opens AgentDB with its own better-sqlite3
+ *  - @claude-flow/memory >= 3.0.4 opens AgentDB with its own better-sqlite3
  *    (agentdb-native-driver.js, getHostSqliteDriver) to keep agentdb's nested
  *    11.x — compiled from source on Node 24, which aborts in Statement GC —
  *    out of the process. Resolve from memory's location then.
