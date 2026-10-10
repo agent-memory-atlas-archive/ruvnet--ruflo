@@ -1860,7 +1860,6 @@ Install these optional plugins to extend Ruflo capabilities:
 
 | Plugin | Version | Description | Install Command |
 |--------|---------|-------------|-----------------|
-| **@claude-flow/plugin-agentic-qe** | 3.0.0-alpha.2 | Quality Engineering with 58 AI agents across 12 DDD contexts. TDD, coverage analysis, security scanning, chaos engineering, accessibility testing. | `npm install @claude-flow/plugin-agentic-qe` |
 | **@claude-flow/plugin-prime-radiant** | 0.1.4 | Mathematical AI interpretability with 6 engines: sheaf cohomology, spectral analysis, causal inference, quantum topology, category theory, HoTT proofs. | `npm install @claude-flow/plugin-prime-radiant` |
 | **@claude-flow/plugin-gastown-bridge** | 0.1.0 | Gas Town orchestrator integration with WASM-accelerated formula parsing (instant (regex-based, no LLM call)), Beads sync, convoy management, and graph analysis. 20 MCP tools. | `npx ruflo@latest plugins install -n @claude-flow/plugin-gastown-bridge` |
 | **@claude-flow/teammate-plugin** | 1.0.0-alpha.1 | Native TeammateTool integration for Claude Code v2.1.19+. BMSSP WASM acceleration, rate limiting, circuit breaker, semantic routing. 21 MCP tools. | `npx ruflo@latest plugins install -n @claude-flow/teammate-plugin` |
@@ -1890,12 +1889,7 @@ Install these optional plugins to extend Ruflo capabilities:
 | **@claude-flow/plugin-quantum-optimizer** | 0.1.0 | Quantum-inspired optimization (QAOA, VQE, quantum annealing). Combinatorial optimization, Grover search, tensor networks. | `npm install @claude-flow/plugin-quantum-optimizer` |
 | **@claude-flow/plugin-hyperbolic-reasoning** | 0.1.0 | Hyperbolic geometry for hierarchical reasoning. Poincaré embeddings, tree-like structure analysis, taxonomic inference. | `npm install @claude-flow/plugin-hyperbolic-reasoning` |
 
-**Agentic-QE Plugin Features:**
-- 58 specialized QE agents across 13 bounded contexts
-- 16 MCP tools: `aqe/generate-tests`, `aqe/tdd-cycle`, `aqe/analyze-coverage`, `aqe/security-scan`, `aqe/chaos-inject`, etc.
-- London-style TDD with red-green-refactor cycles
-- O(log n) coverage gap detection with Johnson-Lindenstrauss
-- OWASP/SANS compliance auditing
+**Quality Engineering (Agentic QE):** the in-repo `@claude-flow/plugin-agentic-qe` shim has been retired. Use the maintained [`agentic-qe`](https://www.npmjs.com/package/agentic-qe) package (`npx agentic-qe init`), or install its Claude Code plugin `agentic-qe-fleet` from the `agentic-qe` marketplace ([proffesor-for-testing/agentic-qe](https://github.com/proffesor-for-testing/agentic-qe)).
 
 **Prime-Radiant Plugin Features:**
 - 6 mathematical engines for AI interpretability
@@ -1926,9 +1920,6 @@ Install these optional plugins to extend Ruflo capabilities:
 - **Hyperbolic Reasoning**: 5 tools for Poincaré embeddings, tree inference, taxonomic analysis
 
 ```bash
-# Install Quality Engineering plugin
-npm install @claude-flow/plugin-agentic-qe
-
 # Install AI Interpretability plugin
 npm install @claude-flow/plugin-prime-radiant
 
