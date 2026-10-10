@@ -234,3 +234,47 @@ describe('fallbackLouvain complexity fix', () => {
   // on a loaded/shared CI runner — same failure mode independently hit and
   // fixed by PR #3754 (2026-10-05).
 });
+
+/**
+ * Differential test: the incremental `communityTotal` must be observationally
+ * identical to the frozen pre-fix rebuild on arbitrary graphs, not just the two
+ * clustered fixtures above. Seeded (no Math.random) so failures reproduce.
+ * Covers unit, small-integer (the shipped re-export weight is 2) and
+ * fractional weights, disconnected graphs, self-loops, parallel/duplicate
+ * edges, and edges naming nodes that are not in the node list (ignored).
+ */
+describe('fallbackLouvain differential vs the pre-fix algorithm', () => {
+  type Kind = 'unit' | 'int' | 'fractional';
+
+  function randomGraph(seed: number, kind: Kind): { nodes: string[]; edges: Edge[] } {
+    const r = makeRng(seed);
+    const n = Math.floor(r() * 60);
+    const nodes = Array.from({ length: n }, (_, i) => `n${i}`);
+    const density = [0.02, 0.08, 0.3][seed % 3]; // sparse/disconnected -> dense
+    const edges: Edge[] = [];
+    for (let i = 0; i < n; i++) {
+      for (let j = i; j < n; j++) {
+        if (i === j && r() > 0.1) continue; // occasional self-loop
+        if (r() >= density) continue;
+        const w = kind === 'unit' ? 1 : kind === 'int' ? 1 + Math.floor(r() * 3) : r() * 5 + 0.01;
+        edges.push([nodes[i], nodes[j], w]);
+        if (r() < 0.1) edges.push([nodes[j], nodes[i], w]); // parallel edge
+      }
+    }
+    if (n > 2) edges.push(['not-a-node', nodes[0], 1]);
+    return { nodes, edges };
+  }
+
+  it.each(['unit', 'int', 'fractional'] as Kind[])('matches the pre-fix output exactly on 600 random %s-weight graphs', kind => {
+    let nonTrivial = 0;
+    for (let seed = 0; seed < 600; seed++) {
+      const { nodes, edges } = randomGraph(seed * 7919 + kind.length, kind);
+      const current = fallbackLouvain(nodes, edges);
+      // Same communities, same member order, same ids and same modularity (not just a sorted/rounded view).
+      expect(current, `seed ${seed}`).toEqual(legacyFallbackLouvain(nodes, edges));
+      if (current.communities.length < nodes.length) nonTrivial++;
+    }
+    // Guard against a generator that only produces all-singleton results.
+    expect(nonTrivial).toBeGreaterThan(300);
+  });
+});
