@@ -11,6 +11,7 @@ import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } fro
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createHash } from 'crypto';
+import { ownInstallAncestors } from '../plugins/own-install.js';
 import { execSync, exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { decodeKey, isEncryptionEnabled } from '../encryption/vault.js';
@@ -2117,11 +2118,10 @@ async function checkMetaharnessIntegration(): Promise<HealthCheck> {
   // installs and monorepo dev. The plugin found here is imported below, so it
   // must come from this CLI's own install, never from the cwd (the project).
   try {
+    // Bounded at node_modules: a project-local install must not reach the project.
     const selfDir = dirname(fileURLToPath(import.meta.url));
-    let q = selfDir;
-    for (let i = 0; i < 8; i++) {
+    for (const q of ownInstallAncestors(selfDir)) {
       candidates.push(join(q, 'plugins', 'ruflo-metaharness'));
-      q = dirname(q);
     }
   } catch {
     // import.meta.url unavailable under some bundlers — the plugin is reported absent.

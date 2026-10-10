@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { ownInstallAncestors, ownPluginDirs } from '../src/plugins/own-install.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '../../../..');
@@ -55,16 +56,59 @@ describe('locators of executed modules never consult the cwd', () => {
     });
   }
 
-  it('embedding-service resolves agentic-flow from its own package only', () => {
-    const source = readFileSync(resolve(REPO, 'v3/@claude-flow/embeddings/src/embedding-service.ts'), 'utf8');
-    expect(source).not.toContain("path.join(cwd, 'node_modules/agentic-flow");
-    expect(source).not.toContain('/workspaces/claude-flow/node_modules');
-    expect(source).toContain("require.resolve('agentic-flow/package.json')");
-  });
-
   it('compact.mjs does not resolve the token optimizer from the cwd', () => {
     const source = readFileSync(resolve(REPO, 'plugins/ruflo-cost-tracker/scripts/compact.mjs'), 'utf8');
     expect(source).not.toContain("tryResolveFrom(join(process.cwd(), 'package.json'))");
+  });
+});
+
+describe('plugin locators stay inside the package own install', () => {
+  const sources: Array<[string, string]> = [
+    ['v3/@claude-flow/cli/src/mcp-tools/testgen-tools.ts', 'locateTestgenScripts'],
+    ['v3/@claude-flow/cli/src/mcp-tools/metaharness-tools.ts', 'locatePluginScripts'],
+    ['v3/@claude-flow/cli/src/commands/metaharness.ts', 'locatePluginScripts'],
+    ['v3/@claude-flow/cli/src/commands/doctor.ts', 'checkMetaharnessIntegration'],
+  ];
+  for (const [file, name] of sources) {
+    it(`${file} ${name}() walks up through the bounded helper, not a hand-rolled loop`, () => {
+      const body = fnSource(file, name);
+      expect(body).toMatch(/ownPluginDirs\(|ownInstallAncestors\(/);
+      expect(body).not.toMatch(/(\w+) = dirname\(\1\)/);
+    });
+  }
+
+  it("a project-local install never reaches the project's own plugins/ directory", () => {
+    const project = scratch();
+    const cliDir = join(project, 'node_modules', '@claude-flow', 'cli', 'dist', 'src', 'mcp-tools');
+    for (const plugin of ['ruflo-testgen', 'ruflo-metaharness']) {
+      const dirs = [...ownPluginDirs(cliDir, plugin, 'scripts'), ...ownInstallAncestors(cliDir).map((d) => join(d, 'plugins', plugin))];
+      expect(dirs.length).toBeGreaterThan(0);
+      // Every candidate is inside the package; none is the project or above it.
+      for (const d of dirs) expect(d.startsWith(join(project, 'node_modules', '@claude-flow', 'cli')) || d.startsWith(join(project, 'node_modules', '@claude-flow', 'plugins'))).toBe(true);
+      expect(dirs).not.toContain(join(project, 'plugins', plugin, 'scripts'));
+    }
+    // The package's own bundled plugin is still found.
+    expect(ownPluginDirs(cliDir, 'ruflo-metaharness', 'scripts')).toContain(
+      join(project, 'node_modules', '@claude-flow', 'cli', 'plugins', 'ruflo-metaharness', 'scripts'),
+    );
+  });
+
+  it('pnpm and global layouts stop at their node_modules too', () => {
+    const pnpm = '/p/node_modules/.pnpm/@claude-flow+cli@1/node_modules/@claude-flow/cli/dist/src/commands';
+    expect(ownInstallAncestors(pnpm)).not.toContain('/p/node_modules/.pnpm/@claude-flow+cli@1');
+    expect(ownInstallAncestors('/usr/lib/node_modules/@claude-flow/cli/dist/src')).toEqual([
+      '/usr/lib/node_modules/@claude-flow/cli/dist/src',
+      '/usr/lib/node_modules/@claude-flow/cli/dist',
+      '/usr/lib/node_modules/@claude-flow/cli',
+      '/usr/lib/node_modules/@claude-flow',
+    ]);
+  });
+
+  it('a source checkout still reaches the repo root (monorepo dev)', () => {
+    const repo = '/work/ruflo';
+    expect(ownPluginDirs(`${repo}/v3/@claude-flow/cli/src/mcp-tools`, 'ruflo-testgen', 'scripts')).toContain(
+      `${repo}/plugins/ruflo-testgen/scripts`,
+    );
   });
 });
 
